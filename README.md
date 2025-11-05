@@ -622,5 +622,269 @@ func main() {
 ### Concurrency in API requests
 
 ```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"sync"
+	"time"
+)
+
+var listOfEndpoints = [5]string{
+	"https://jsonplaceholder.typicode.com/posts",
+	"https://jsonplaceholder.typicode.com/albums",
+	"https://jsonplaceholder.typicode.com/users",
+	"https://jsonplaceholder.typicode.com/photos",
+	"https://jsonplaceholder.typicode.com/comments",
+}
+
+func main() {
+	fetchDataSequentially()
+	fetchDataConcurrently()
+	fetchDataConcurrentlyWithBufferedChannels()
+}
+
+func fetchData(endpoint string) ([]byte, error) {
+
+	client := &http.Client{Timeout: 3 * time.Second}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, endpoint, nil)
+	if err != nil {
+		fmt.Println("Could not create the request due to: ", err.Error())
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		fmt.Println("Could not perform the request due to: ", err.Error())
+	}
+
+	defer resp.Body.Close()
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		fmt.Println("Error reading response:", err)
+		return nil, err
+	}
+	return body, nil
+}
+
+func fetchDataSequentially() {
+	defer timeTrack(time.Now(), "Sequential Data Fetch Operation")
+	for _, endpoint := range listOfEndpoints {
+		_, err := fetchData(endpoint)
+		if err != nil {
+			log.Printf("Error fetching data from %s: %v", endpoint, err)
+			continue
+		}
+	}
+}
+
+func fetchDataConcurrently() {
+	defer timeTrack(time.Now(), "Concurrent Data Fetching Operation With WaitGroup")
+	var wg sync.WaitGroup
+	for _, endpoint := range listOfEndpoints {
+		wg.Add(1)
+		go func(ep string) {
+			defer wg.Done()
+			_, err := fetchData(ep)
+			if err != nil {
+				log.Printf("Error fetching data from %s: %v \n", ep, err)
+				return
+			}
+			// Process the data
+			// log.Printf("Gotten Data from %s: %+v \n", ep, string(data))
+		}(endpoint)
+	}
+	wg.Wait()
+}
+
+func fetchDataConcurrentlyWithBufferedChannels() {
+	defer timeTrack(time.Now(), "Concurrent Data Fetching Operation With Buffered Channels")
+	type Result struct {
+		Data []byte
+		Err  error
+	}
+
+	var wg sync.WaitGroup
+	results := make(chan Result, len(listOfEndpoints))
+	for _, endpoint := range listOfEndpoints {
+		wg.Add(1)
+		go func(ep string) {
+			defer wg.Done()
+			data, err := fetchData(ep)
+			result := Result{Data: data, Err: err}
+			// Send the result to the channel
+			results <- result
+		}(endpoint)
+	}
+	// Close the channel when all goroutines are done
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+	// Process results from the channel
+	for result := range results {
+		if result.Err != nil {
+			log.Printf("Error fetching data: %v", result.Err)
+			continue
+		}
+		// Process the data
+		// log.Printf("Gotten Data from %+v \n", string(result.Data))
+	}
+}
+
+func timeTrack(start time.Time, operationName string) {
+	elapsed := time.Since(start)
+	fmt.Printf("%s took %s \n", operationName, elapsed)
+}
+```
+
+### Rate limiting
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"time"
+
+	"golang.org/x/time/rate"
+)
+
+const (
+	maxAttempts = 5
+	endpoint    = "https://jsonplaceholder.typicode.com/unknwon"
+)
+
+func main() {
+	fetchDataWithExponentialBackoff()
+}
+
+func fetchDataWithExponentialBackoff() {
+	client := &http.Client{}
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := client.Get(endpoint)
+		if err != nil {
+			log.Printf("Error fetching data: %v", err)
+			return
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			fmt.Printf("Rate limited. Retrying in %d seconds... \n", attempt)
+			time.Sleep(time.Duration(attempt) * time.Second)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("Request Not successful. Retrying in %d seconds... \n", attempt)
+			time.Sleep(time.Duration(attempt) * time.Second)
+			continue
+		}
+		// Process the response
+		// ...
+		resp.Body.Close()
+		break
+	}
+}
+
+func fetchDataWithRateLimiter() {
+	limiter := rate.NewLimiter(rate.Limit(10), 1) // 10 requests per second
+
+	for i := 0; i < maxAttempts; i++ {
+		if err := limiter.Wait(context.Background()); err != nil {
+			fmt.Printf("Rate limited. Retrying in %v... \n", err)
+			continue
+		}
+
+		resp, err := http.Get(endpoint)
+		if err != nil {
+			log.Printf("Error fetching data: %v", err)
+			return
+		}
+		// Process the response
+
+		resp.Body.Close()
+	}
+}
+```
+
+### Optimizations
+
+- Connection reuse and polling
+- Caching responses
+- Using HTTP keep-alive
+
+## Testing
+
+### Unit testing
+
+```go
+package chapter6
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+)
+
+// Client represents the HTTP client interface.
+type Client struct {
+	HTTPClient HTTPClient
+}
+
+// HTTPClient is an interface representing the methods of http.Client.
+type HTTPClient interface {
+	Do(req *http.Request) (*http.Response, error)
+}
+
+type Todo struct {
+	UserId    int    `json:"userId"`
+	ID        int    `json:"id"`
+	Title     string `json:"title"`
+	Completed bool   `json:"completed"`
+}
+
+// FetchData fetches data from an external API using the HTTP client.
+func (c *Client) FetchTodo() (Todo, error) {
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://jsonplaceholder.typicode.com/todos/1", nil)
+	if err != nil {
+		return Todo{}, err
+	}
+
+	resp, err := c.HTTPClient.Do(req)
+	if err != nil {
+		return Todo{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return Todo{}, errors.New("unexpected status code")
+	}
+
+	// Decode the JSON response
+	var todo Todo
+	err = json.NewDecoder(resp.Body).Decode(&todo)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		return Todo{}, err
+	}
+
+	return todo, nil
+}
+```
+
+### Mocking RST API
+
+```go
 
 ```
