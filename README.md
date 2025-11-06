@@ -824,6 +824,8 @@ func fetchDataWithRateLimiter() {
 
 ## Testing
 
+[httptest](https://pkg.go.dev/net/http/httptest)
+
 ### Unit testing
 
 ```go
@@ -883,8 +885,100 @@ func (c *Client) FetchTodo() (Todo, error) {
 }
 ```
 
+```go
+package chapter6
+
+import (
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestFetchTodo(t *testing.T) {
+	// Create a mock server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Define the response for the test case
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`{"userId": 1, "id": 1, "title": "delectus aut autem", "completed": false}`))
+	}))
+	defer server.Close()
+
+	// Make a "real" GET request to our mock http server
+	resp, err := http.Get(server.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("Expected response status code to be %d but got %d", http.StatusOK, resp.StatusCode)
+	}
+
+	// Decode the JSON response
+	var todo Todo
+	err = json.NewDecoder(resp.Body).Decode(&todo)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check the fetched todo
+	expectedTodo := Todo{UserId: 1, ID: 1, Title: "delectus aut autem", Completed: false}
+	if todo != expectedTodo {
+		t.Errorf("FetchTodo() returned unexpected todo. Expected: %+v, Got: %+v", expectedTodo, todo)
+	}
+}
+```
+
 ### Mocking RST API
 
 ```go
+package chapter6
 
+import (
+	"errors"
+	"io"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+type MockHTTPClient struct {
+	DoFunc func(req *http.Request) (*http.Response, error)
+}
+
+func (m *MockHTTPClient) Do(req *http.Request) (*http.Response, error) {
+	if m.DoFunc != nil {
+		return m.DoFunc(req)
+	}
+	return nil, errors.New("mock DoFunc not implemented")
+}
+
+func TestFetchTodoWithMockClient(t *testing.T) {
+	// Create a mock client
+	mockClient := &MockHTTPClient{
+		DoFunc: func(req *http.Request) (*http.Response, error) {
+			// Define the response for the test case
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader(`{"userId": 1, "id": 1, "title": "delectus aut autem", "completed": false}`)),
+			}, nil
+		},
+	}
+
+	// Use the mock client in your client code
+	client := &Client{HTTPClient: mockClient}
+
+	// Call the FetchTodo method
+	todo, err := client.FetchTodo()
+	if err != nil {
+		t.Errorf("FetchTodo() returned error: %v", err)
+	}
+
+	// Check the fetched todo
+	expectedTodo := Todo{UserId: 1, ID: 1, Title: "delectus aut autem", Completed: false}
+	if todo != expectedTodo {
+		t.Errorf("FetchTodo() returned unexpected todo. Expected: %+v, Got: %+v", expectedTodo, todo)
+	}
+}
 ```
